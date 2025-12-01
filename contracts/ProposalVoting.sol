@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
 /**
  * @title ProposalVoting
- * @dev A decentralized voting system where token holders can create and vote on proposals
- * @notice This contract allows members to submit proposals and vote using a token-weighted system
+ * @dev A decentralized voting system using OpenZeppelin's ERC20 standard for token-weighted voting
+ * @notice This contract extends ERC20 with custom governance functionality
+ * 
+ * OPENZEPPELIN INTEGRATION:
+ * - Inherits from ERC20 for standardized token functionality
+ * - Inherits from Ownable for access control
+ * - Uses secure transfer mechanisms from OpenZeppelin
  */
-contract ProposalVoting {
+contract ProposalVoting is ERC20, Ownable {
     
     // ============ State Variables ============
     
-    /// @notice Owner of the contract (deployer)
-    address public owner;
-    
-    /// @notice Total supply of voting tokens
-    uint256 public totalSupply;
-    
     /// @notice Minimum token balance required to create a proposal
-    uint256 public constant MIN_TOKENS_TO_PROPOSE = 100;
+    uint256 public constant MIN_TOKENS_TO_PROPOSE = 100 * 10**18; // 100 tokens with 18 decimals
     
     /// @notice Voting threshold percentage (50% = 5000 basis points)
     uint256 public constant VOTING_THRESHOLD = 5000; // 50%
@@ -27,9 +29,6 @@ contract ProposalVoting {
     uint256 public proposalCount;
     
     // ============ Mappings ============
-    
-    /// @notice Mapping of address to token balance
-    mapping(address => uint256) public balances;
     
     /// @notice Mapping of proposal ID to Proposal struct
     mapping(uint256 => Proposal) public proposals;
@@ -65,9 +64,6 @@ contract ProposalVoting {
     
     // ============ Events ============
     
-    /// @notice Emitted when tokens are minted
-    event TokensMinted(address indexed to, uint256 amount);
-    
     /// @notice Emitted when a new proposal is created
     event ProposalCreated(
         uint256 indexed proposalId,
@@ -89,12 +85,6 @@ contract ProposalVoting {
     
     // ============ Modifiers ============
     
-    /// @notice Restricts function to contract owner only
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function");
-        _;
-    }
-    
     /// @notice Checks if proposal exists
     modifier proposalExists(uint256 _proposalId) {
         require(_proposalId > 0 && _proposalId <= proposalCount, "Proposal does not exist");
@@ -111,53 +101,38 @@ contract ProposalVoting {
     // ============ Constructor ============
     
     /**
-     * @dev Initializes the contract and mints initial tokens to the deployer
+     * @dev Initializes the ERC20 token and mints initial supply
+     * @notice Creates "GovernanceToken" (GOV) with 18 decimals (ERC20 standard)
+     * 
+     * OPENZEPPELIN USAGE:
+     * - ERC20("GovernanceToken", "GOV") sets token name and symbol
+     * - Ownable(msg.sender) sets contract deployer as owner
+     * - _mint() uses OpenZeppelin's secure minting function
      */
-    constructor() {
-        owner = msg.sender;
-        // Mint initial supply to owner for testing
-        _mint(msg.sender, 10000);
+    constructor() ERC20("GovernanceToken", "GOV") Ownable(msg.sender) {
+        // Mint initial supply to owner (10,000 tokens with 18 decimals)
+        _mint(msg.sender, 10000 * 10**18);
     }
     
-    // ============ Token Functions ============
+    // ============ Token Functions (Extended from ERC20) ============
     
     /**
      * @notice Mints new voting tokens (only owner)
+     * @dev Uses OpenZeppelin's _mint function with built-in security checks
      * @param _to Address to receive tokens
-     * @param _amount Amount of tokens to mint
+     * @param _amount Amount of tokens to mint (in wei, 18 decimals)
      */
     function mint(address _to, uint256 _amount) external onlyOwner {
         _mint(_to, _amount);
     }
     
     /**
-     * @dev Internal function to mint tokens
-     * @param _to Address to receive tokens
-     * @param _amount Amount of tokens to mint
+     * @notice Burns tokens from caller's balance
+     * @dev Uses OpenZeppelin's _burn function
+     * @param _amount Amount of tokens to burn
      */
-    function _mint(address _to, uint256 _amount) internal {
-        require(_to != address(0), "Cannot mint to zero address");
-        require(_amount > 0, "Amount must be greater than zero");
-        
-        balances[_to] += _amount;
-        totalSupply += _amount;
-        
-        emit TokensMinted(_to, _amount);
-    }
-    
-    /**
-     * @notice Transfers tokens to another address
-     * @param _to Recipient address
-     * @param _amount Amount to transfer
-     */
-    function transfer(address _to, uint256 _amount) external returns (bool) {
-        require(_to != address(0), "Cannot transfer to zero address");
-        require(balances[msg.sender] >= _amount, "Insufficient balance");
-        
-        balances[msg.sender] -= _amount;
-        balances[_to] += _amount;
-        
-        return true;
+    function burn(uint256 _amount) external {
+        _burn(msg.sender, _amount);
     }
     
     // ============ Proposal Functions ============
@@ -168,7 +143,7 @@ contract ProposalVoting {
      * @param _votingPeriod Duration of voting period in seconds
      */
     function createProposal(string memory _description, uint256 _votingPeriod) external returns (uint256) {
-        require(balances[msg.sender] >= MIN_TOKENS_TO_PROPOSE, "Insufficient tokens to create proposal");
+        require(balanceOf(msg.sender) >= MIN_TOKENS_TO_PROPOSE, "Insufficient tokens to create proposal");
         require(bytes(_description).length > 0, "Description cannot be empty");
         require(_votingPeriod >= 60, "Voting period must be at least 60 seconds");
         require(_votingPeriod <= 30 days, "Voting period cannot exceed 30 days");
@@ -195,6 +170,7 @@ contract ProposalVoting {
     
     /**
      * @notice Casts a vote on a proposal
+     * @dev Vote weight is based on token balance at time of voting
      * @param _proposalId ID of the proposal to vote on
      * @param _support True for yes, false for no
      */
@@ -202,10 +178,10 @@ contract ProposalVoting {
         proposalExists(_proposalId) 
         proposalActive(_proposalId) 
     {
-        require(balances[msg.sender] > 0, "Must have tokens to vote");
+        require(balanceOf(msg.sender) > 0, "Must have tokens to vote");
         require(!hasVoted[_proposalId][msg.sender], "Already voted on this proposal");
         
-        uint256 weight = balances[msg.sender];
+        uint256 weight = balanceOf(msg.sender); // Uses ERC20's balanceOf
         hasVoted[_proposalId][msg.sender] = true;
         voteChoice[_proposalId][msg.sender] = _support;
         
@@ -295,10 +271,20 @@ contract ProposalVoting {
     
     /**
      * @notice Gets the voting power of an address
+     * @dev Uses ERC20's balanceOf function
      * @param _account Address to check
      * @return Token balance (voting power)
      */
     function getVotingPower(address _account) external view returns (uint256) {
-        return balances[_account];
+        return balanceOf(_account);
+    }
+    
+    /**
+     * @notice Gets total token supply
+     * @dev Uses ERC20's totalSupply function
+     * @return Total supply of governance tokens
+     */
+    function getTotalSupply() external view returns (uint256) {
+        return totalSupply();
     }
 }
